@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">  
+<head>  
+<meta charset="utf-8" />  
+<meta name="viewport" content="width=device-width,initial-scale=1" />  
+<title>Guest — Simple Call</title>  
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">  
+<style>  
+  :root{--bg:#071021;--accent:#1dd1a1;--muted:#94a3b8}  
+  html,body{height:100%;margin:0;background:linear-gradient(180deg,#071021,#04101a);font-family:Inter,system-ui,Arial;color:white}  
+  .screen{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:12px;box-sizing:border-box}  
+
+  /* main video always fills */
+  #mainVideo{width:100%;height:100vh;background:#000;border-radius:12px;object-fit:cover;margin-top:0}  
+
+  /* thumbnail anchored to bottom */
+  #thumb{position:fixed;right:12px;bottom:12px;width:120px;height:160px;border-radius:10px;overflow:hidden;border:2px solid #1dd1a1;background:#000;object-fit:cover;cursor:pointer;z-index:1000;transition:bottom .3s ease;box-shadow:0 0 15px 3px rgba(29,209,161,0.7);}  
+
+  /* controls centered, moved higher to avoid thumbnail overlap */
+  .controls{position:fixed;left:50%;bottom:180px;transform:translateX(-50%);display:flex;gap:40px;z-index:1100}  
+  .btn{width:120px;height:120px;border-radius:999px;border:none;background:linear-gradient(135deg,#ffffff16,#ffffff0a);display:flex;align-items:center;justify-content:center;font-size:42px;color:white;cursor:pointer;box-shadow:0 8px 24px rgba(0,0,0,0.4)}  
+  .btn.ready{background:linear-gradient(135deg,#ff9f43,#ff6b01)}  
+  .btn.call{background:linear-gradient(135deg,#1dd1a1,#2ecc71)}  
+
+  /* fixed apple button size */
+  .smallAction{position:fixed;left:14px;bottom:14px;width:56px;height:56px;border-radius:50%;box-shadow:0 0 10px 2px white;cursor:pointer;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,0.08)}  
+  .smallAction button{background:none;border:none;font-size:28px;cursor:pointer;color:white;width:100%;height:100%}  
+
+  .overlayControls{position:fixed;left:14px;bottom:90px;background:rgba(0,0,0,0.45);padding:10px;border-radius:12px;backdrop-filter: blur(6px);display:none;flex-direction:column;gap:8px;z-index:1100}  
+  .smallBtn{width:56px;height:56px;border-radius:12px;border:none;background:linear-gradient(135deg,#ffffff10,#ffffff06);font-size:22px;cursor:pointer;color:white}  
+  .subMenu{display:none;flex-direction:column;gap:6px;margin-top:6px}  
+  #toastsGuest{position:fixed;left:50%;transform:translateX(-50%);top:18px;z-index:2000;display:flex;flex-direction:column;gap:8px}  
+  .toast{background:#0e1720;padding:10px 14px;border-radius:10px;border:1px solid rgba(255,255,255,0.03);box-shadow:0 6px 20px rgba(2,6,23,0.6);opacity:0;transform:translateY(-6px);transition:all .28s ease}  
+  .toast.show{opacity:1;transform:translateY(0)}  
+  @media(min-width:720px){  
+    #thumb{width:160px;height:210px;right:18px}  
+    .btn{width:130px;height:130px;font-size:46px}  
+  }  
+</style>  
+</head>  
+<body>  
+<div class="screen">  
+  <video id="mainVideo" autoplay playsinline></video>  
+  <video id="thumb" autoplay playsinline muted></video>  
+  
+  <div class="controls" id="controlsArea">  
+      <button class="btn ready" id="readyBtn" onclick="guestReady()">✅</button>  
+      <button class="btn call" id="callBtn" onclick="guestCall()">📞</button>  
+  </div>  
+  
+  <div class="smallAction" id="appleBtnWrap">  
+    <button id="menuBtn" onclick="toggleMenu()">🍎</button>  
+  </div>  
+  
+  <div class="overlayControls" id="overlay">  
+    <button class="smallBtn" onclick="toggleGuestMic()" id="micBtn">🎤</button>  
+    <button class="smallBtn" onclick="toggleGuestCam()" id="camBtn">📷</button>  
+    <button class="smallBtn" onclick="toggleSpeaker()" id="spkBtn">🔊</button>  
+    <button class="smallBtn" onclick="switchCamera()" id="camSwitchBtn">🔄</button>  
+    <div>  
+      <button class="smallBtn" onclick="toggleQualityMenu()">⚙️</button>  
+      <div class="subMenu" id="qualityMenu">  
+        <button class="smallBtn" onclick="setQuality('auto')">A</button>  
+        <button class="smallBtn" onclick="setQuality('low')">L</button>  
+        <button class="smallBtn" onclick="setQuality('medium')">M</button>  
+        <button class="smallBtn" onclick="setQuality('high')">H</button>  
+      </div>  
+    </div>  
+    <button class="smallBtn" onclick="toggleMirror()">🪞</button>  
+    <button class="smallBtn" onclick="closeMenu()">❌</button>  
+  </div>  
+  
+  <div id="toastsGuest"></div>  
+</div>  
+  
+<script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>  
+<script>  
+const ROOM_CODE = '&game_id=3';  
+const HOST_PEER_ID = 'host-' + btoa(ROOM_CODE).replace(/=*$/,'');  
+let peer=null, localStream=null, currentCall=null, dataConn=null;  
+let overlayVisible=false, guestMicEnabled=true, guestCamEnabled=true, guestSpeakerOn=true;  
+let menuTimer=null, qualityMenuVisible=false;  
+let mirrorOn=false;  
+let facingMode='user';  
+
+/* --- Toast --- */  
+function toastGuest(msg, timeout=3500){  
+  const node=document.createElement('div');  
+  node.className='toast'; node.innerText=msg;  
+  document.getElementById('toastsGuest').appendChild(node);  
+  setTimeout(()=> node.classList.add('show'),10);  
+  setTimeout(()=>{ node.classList.remove('show'); setTimeout(()=>node.remove(),300);}, timeout);  
+}  
+
+/* --- Guest actions --- */  
+async function guestReady(){  
+  try{  
+    localStream=await navigator.mediaDevices.getUserMedia({  
+      video: { width: 640, height: 480, facingMode: facingMode },  
+      audio: true  
+    });  
+    document.getElementById('thumb').srcObject=localStream;  
+    applyMirror();  
+    toastGuest('Ready ✔');  
+    if(!peer){  
+      peer=new Peer();  
+      peer.on('open', id=>console.log('Peer connected',id));  
+      peer.on('error', err=>console.error('Peer error:', err));  
+    }  
+  }catch(e){ alert('Need camera & mic permission: '+e);}  
+}  
+
+async function guestCall(){  
+  if(!localStream){alert('Press Ready first');return;}  
+  if(!peer || peer.disconnected || peer.destroyed){  
+    peer=new Peer();  
+    peer.on('open', id=>console.log('Peer connected',id));  
+    peer.on('error', err=>console.error('Peer error:', err));  
+  }  
+  const conn=peer.connect(HOST_PEER_ID);  
+  conn.on('open',()=>{  
+    dataConn=conn;  
+    startJoinCountdown(3, async ()=>{  
+      toastGuest('Joining now…');  
+      currentCall=peer.call(HOST_PEER_ID, localStream);  
+      currentCall.on('stream', remote=>{  
+        document.getElementById('mainVideo').srcObject=remote;  
+        toastGuest('In call 🎥');  
+        document.getElementById('controlsArea').remove();  
+        document.getElementById('thumb').style.bottom='12px';  
+        setQuality('auto');  
+        applyMirror();  
+      });  
+      currentCall.on('error', err=>console.error('Call error:', err));  
+      conn.on('data', handleHostCommand);  
+    });  
+    conn.on('error', err=>console.error('Data connection error:', err));  
+  });  
+}  
+
+/* countdown */  
+function startJoinCountdown(n,cb){  
+  let i=n;  
+  const tick=()=>{ if(i<=0){cb();return;} toastGuest(`Joining in ${i}…`); i--; setTimeout(tick,900);};  
+  tick();  
+}  
+
+/* --- Menu toggle --- */  
+function toggleMenu(){  
+  overlayVisible=!overlayVisible;  
+  document.getElementById('overlay').style.display=overlayVisible?'flex':'none';  
+  document.getElementById('menuBtn').disabled=overlayVisible;  
+  if(overlayVisible){  
+    clearTimeout(menuTimer);  
+    menuTimer=setTimeout(()=>{closeMenu();},6000);  
+  }  
+}  
+function closeMenu(){  
+  overlayVisible=false;  
+  qualityMenuVisible=false;  
+  document.getElementById('overlay').style.display='none';  
+  document.getElementById('qualityMenu').style.display='none';  
+  document.getElementById('menuBtn').disabled=false;  
+  clearTimeout(menuTimer);  
+}  
+
+/* --- Quality submenu --- */  
+function toggleQualityMenu(){  
+  qualityMenuVisible=!qualityMenuVisible;  
+  document.getElementById('qualityMenu').style.display=qualityMenuVisible?'flex':'none';  
+}  
+
+/* --- toggles --- */  
+function toggleGuestMic(){  
+  if(!localStream) return;  
+  guestMicEnabled=!guestMicEnabled;  
+  localStream.getAudioTracks()[0].enabled=guestMicEnabled;  
+  toastGuest(guestMicEnabled?'You unmuted':'You muted');  
+  closeMenu();  
+}  
+function toggleGuestCam(){  
+  if(!localStream) return;  
+  guestCamEnabled=!guestCamEnabled;  
+  localStream.getVideoTracks()[0].enabled=guestCamEnabled;  
+  toastGuest(guestCamEnabled?'Cam ON':'Cam OFF');  
+  closeMenu();  
+}  
+function toggleSpeaker(){  
+  guestSpeakerOn=!guestSpeakerOn;  
+  document.getElementById('mainVideo').muted=!guestSpeakerOn;  
+  toastGuest(guestSpeakerOn?'Speaker ON':'Speaker OFF');  
+  closeMenu();  
+}  
+
+/* --- Camera switch --- */  
+async function switchCamera(){  
+  if(!localStream) return;  
+  facingMode = facingMode === 'user' ? 'environment' : 'user';  
+  try {  
+    localStream.getTracks().forEach(track => track.stop());  
+    localStream = await navigator.mediaDevices.getUserMedia({  
+      video: { width: 640, height: 480, facingMode: facingMode },  
+      audio: true  
+    });  
+    document.getElementById('thumb').srcObject = localStream;  
+    if (currentCall) {  
+      const videoTrack = localStream.getVideoTracks()[0];  
+      const sender = currentCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');  
+      if (sender) {  
+        await sender.replaceTrack(videoTrack);  
+      }  
+    }  
+    applyMirror();  
+    toastGuest(`Switched to ${facingMode === 'user' ? 'front' : 'back'} camera`);  
+  } catch (e) {  
+    console.error('Camera switch failed', e);  
+    toastGuest('Failed to switch camera');  
+  }  
+  closeMenu();  
+}  
+
+/* --- Mirror toggle --- */  
+function toggleMirror(){  
+  if(!localStream) return;  
+  mirrorOn = !mirrorOn;  
+  applyMirror();  
+  toastGuest(mirrorOn ? 'Mirror ON' : 'Mirror OFF');  
+  closeMenu();  
+}  
+
+function applyMirror(){  
+  const thumb = document.getElementById('thumb');  
+  const mainVideo = document.getElementById('mainVideo');  
+  if (thumb.srcObject === localStream) {  
+    thumb.style.transform = mirrorOn ? 'scaleX(-1)' : '';  
+  } else {  
+    thumb.style.transform = '';  
+  }  
+  if (mainVideo.srcObject === localStream) {  
+    mainVideo.style.transform = mirrorOn ? 'scaleX(-1)' : '';  
+  } else {  
+    mainVideo.style.transform = '';  
+  }  
+}  
+
+/* --- Quality control --- */  
+async function setQuality(mode){  
+  if(mode==='auto'){ toastGuest('Quality: Auto'); closeMenu(); return; }  
+  try{  
+    if(!currentCall) return;  
+    const pc=currentCall.peerConnection||currentCall._pc||currentCall._connection;  
+    const vSender=pc.getSenders().find(s=>s.track&&s.track.kind==='video');  
+    if(!vSender) return;  
+    const params=vSender.getParameters(); if(!params.encodings||!params.encodings.length) params.encodings=[{}];  
+    const enc=params.encodings[0];  
+    if(mode==='low'){ enc.maxBitrate=150000; enc.scaleResolutionDownBy=4; }  
+    else if(mode==='medium'){ enc.maxBitrate=500000; enc.scaleResolutionDownBy=2; }  
+    else if(mode==='high'){ enc.maxBitrate=1200000; enc.scaleResolutionDownBy=1; }  
+    await vSender.setParameters(params);  
+    toastGuest('Quality: '+mode);  
+  }catch(e){ console.log('Quality set failed',e);}  
+  closeMenu();  
+}  
+
+/* --- Host commands --- */  
+function handleHostCommand(msg){  
+  console.log('Host->', msg);  
+  try {  
+    const command = typeof msg === 'string' ? JSON.parse(msg) : msg;  
+    if (command.type === 'toggleMic') {  
+      if (!localStream) return;  
+      guestMicEnabled = command.value;  
+      localStream.getAudioTracks()[0].enabled = guestMicEnabled;  
+      toastGuest(guestMicEnabled ? 'Mic ON by host' : 'Mic OFF by host');  
+    } else if (command.type === 'toggleCam') {  
+      if (!localStream) return;  
+      guestCamEnabled = command.value;  
+      localStream.getVideoTracks()[0].enabled = guestCamEnabled;  
+      toastGuest(guestCamEnabled ? 'Cam ON by host' : 'Cam OFF by host');  
+    } else if (command.type === 'toggleSpeaker') {  
+      guestSpeakerOn = command.value;  
+      document.getElementById('mainVideo').muted = !guestSpeakerOn;  
+      toastGuest(guestSpeakerOn ? 'Speaker ON by host' : 'Speaker OFF by host');  
+    } else if (command.type === 'setQuality') {  
+      setQuality(command.value);  
+    } else if (command.type === 'switchCamera') {  
+      switchCamera();  
+    } else if (command.type === 'toggleMirror') {  
+      toggleMirror();  
+    }  
+  } catch (e) {  
+    console.error('Invalid host command:', e);  
+  }  
+}  
+
+/* --- Swap videos --- */  
+const mainVideo=document.getElementById('mainVideo');  
+const thumb=document.getElementById('thumb');  
+thumb.addEventListener('click',()=>{  
+  const mainStream=mainVideo.srcObject;  
+  mainVideo.srcObject=thumb.srcObject;  
+  thumb.srcObject=mainStream;  
+  applyMirror();  
+});  
+
+window.addEventListener('beforeunload',()=>{try{if(peer)peer.destroy();}catch(e){}});  
+</script>  
+</body>  
+</html>
